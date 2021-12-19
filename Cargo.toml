@@ -1,0 +1,15 @@
+[package]
+name = "recording_mod_native"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "recording_mod_native"
+crate_type = ["dylib"]
+
+[dependencies]
+jni = "0.19.0"
+
+[dependencies.ffmpeg-next]
+version = "4.4.0"
+features = ["build-lib-x264", "build-license-gpl"]
