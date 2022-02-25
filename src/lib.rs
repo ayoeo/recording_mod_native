@@ -8,17 +8,15 @@ use ffmpeg_next::{
     context::{output, Output},
     output, Flags, Pixel,
   },
-  frame,
-  sys::av_rescale_q,
-  Dictionary, Packet, Rational,
+  frame, Dictionary, Packet, Rational, Rescale,
 };
 use jni::{objects::JString, JNIEnv};
 
-const PIXEL_FORMAT: Pixel = Pixel::YUV444P;
+// const PIXEL_FORMAT: Pixel = Pixel::YUV420P;
 const OPTS: [(&str, &str); 3] = [
   ("preset", "ultrafast"),
-  ("profile", "high444"),
-  ("crf", "13"),
+  ("profile", "main"),
+  ("crf", "24"), // TODO - make this configurable (oh who cares dude honestly)
 ];
 
 struct JavaFrame {
@@ -35,8 +33,17 @@ impl JavaFrame {
     jvm_y_channel: *mut u8,
     jvm_u_channel: *mut u8,
     jvm_v_channel: *mut u8,
+    use_yuv444: bool,
   ) -> JavaFrame {
-    let mut av_frame = frame::Video::new(PIXEL_FORMAT, width, height);
+    let mut av_frame = frame::Video::new(
+      if use_yuv444 {
+        Pixel::YUV444P
+      } else {
+        Pixel::YUV420P
+      },
+      width,
+      height,
+    );
     av_frame.set_color_range(Range::JPEG);
 
     // Store the original yuv buffers for later cleanup
@@ -80,6 +87,7 @@ impl Renderer {
     frame_rate: Rational,
     frame_a: JavaFrame,
     frame_b: JavaFrame,
+    use_yuv444: bool,
   ) -> Result<Renderer> {
     let mut octx = output(&output_file)?;
     let global_header = octx.format().flags().contains(Flags::GLOBAL_HEADER);
@@ -89,7 +97,11 @@ impl Renderer {
     // TODO - set crf value here ahhahheahh
     encoder.set_width(width);
     encoder.set_height(height);
-    encoder.set_format(PIXEL_FORMAT);
+    encoder.set_format(if use_yuv444 {
+      Pixel::YUV444P
+    } else {
+      Pixel::YUV420P
+    });
     encoder.set_color_range(Range::JPEG);
     encoder.set_frame_rate(Some(frame_rate));
     encoder.set_time_base(frame_rate.invert());
@@ -97,15 +109,23 @@ impl Renderer {
       encoder.set_flags(codec::Flags::GLOBAL_HEADER);
     }
 
-    encoder.open_with(Dictionary::from_iter(OPTS))?;
+    encoder.open_with(Dictionary::from_iter(if use_yuv444 {
+      [
+        ("preset", "ultrafast"),
+        ("profile", "high444"),
+        ("crf", "24"),
+      ]
+    } else {
+      OPTS
+    }))?;
 
     encoder = ost.codec().encoder().video()?;
     ost.set_parameters(encoder);
 
-    unsafe {
-      // TODO - ???
-      // (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-    }
+    // unsafe {
+    // TODO - ???
+    // (*ost.parameters().as_mut_ptr()).codec_tag = 0;
+    // }
 
     let encoder = ost.codec().encoder().video()?;
 
@@ -124,14 +144,9 @@ impl Renderer {
     })
   }
 
-  fn send_frame(&mut self, use_buffer_b: bool) {
-    let pts = unsafe {
-      av_rescale_q(
-        self.frame_index as _,
-        self.frame_rate.invert().into(),
-        self.stream_time_base.into(),
-      )
-    };
+  fn send_frame(&mut self, use_buffer_b: bool) -> bool {
+    let pts =
+      (self.frame_index as i64).rescale(self.frame_rate.invert(), self.stream_time_base);
 
     let frame = if use_buffer_b {
       &mut self.frame_b
@@ -139,32 +154,38 @@ impl Renderer {
       &mut self.frame_a
     };
 
-    println!("oh I see buffer b? {}", use_buffer_b);
+    // println!("oh I see buffer b? {}", use_buffer_b);
     frame.av_frame.set_pts(Some(pts as i64));
 
-    println!("About to send_frame {}", self.frame_index);
-    self.encoder.send_frame(&frame.av_frame).unwrap();
+    // println!("About to send_frame {}", self.frame_index);
+    if self.encoder.send_frame(&frame.av_frame).is_err() {
+      return false;
+    }
 
-    println!("Sent frame, receiving packet {}", self.frame_index);
+    // println!("Sent frame, receiving packet {}", self.frame_index);
     let mut encoded = Packet::empty();
     while self.encoder.receive_packet(&mut encoded).is_ok() {
-      println!("Received packet, writing {}", self.frame_index);
+      //   println!("Received packet, writing {}", self.frame_index);
       encoded.set_stream(0);
-      println!("actually writing {}", self.frame_index);
+      //   println!("actually writing {}", self.frame_index);
       // TODO - ^^^ do we need this when we're like doing audio and stuff?
 
-      encoded.write_interleaved(&mut self.octx).unwrap();
+      if encoded.write_interleaved(&mut self.octx).is_err() {
+        return false;
+      }
     }
-    println!("wrote or didnt sent the frame haha {}", self.frame_index);
+    // println!("wrote or didnt sent the frame haha {}", self.frame_index);
 
     self.frame_index += 1;
+
+    true
   }
 
   fn finish_render(&mut self) -> Result<()> {
     self.encoder.send_eof()?;
     let mut encoded = Packet::empty();
     while self.encoder.receive_packet(&mut encoded).is_ok() {
-      encoded.write_interleaved(&mut self.octx).unwrap();
+      encoded.write_interleaved(&mut self.octx)?;
     }
     self.octx.write_trailer()?;
 
@@ -188,21 +209,22 @@ extern "C" fn Java_me_aris_recordingmod_RendererKt_startEncode(
   y_b: *mut u8,
   u_b: *mut u8,
   v_b: *mut u8,
-) {
-  let frame_a = JavaFrame::new(width, height, y_a, u_a, v_a);
-  let frame_b = JavaFrame::new(width, height, y_b, u_b, v_b);
+  use_yuv444: bool,
+) -> bool {
+  let frame_a = JavaFrame::new(width, height, y_a, u_a, v_a, use_yuv444);
+  let frame_b = JavaFrame::new(width, height, y_b, u_b, v_b, use_yuv444);
   unsafe {
-    RENDERER_STATE = Some(
-      Renderer::new(
-        env.get_string(file).unwrap().into(),
-        width,
-        height,
-        Rational(fps, 1),
-        frame_a,
-        frame_b,
-      )
-      .unwrap(),
-    );
+    RENDERER_STATE = Renderer::new(
+      env.get_string(file).unwrap().into(),
+      width,
+      height,
+      Rational(fps, 1),
+      frame_a,
+      frame_b,
+      use_yuv444,
+    )
+    .ok();
+    RENDERER_STATE.is_some()
   }
 }
 
@@ -211,10 +233,13 @@ extern "C" fn Java_me_aris_recordingmod_RendererKt_sendFrame(
   _: *const (),
   _: *const (),
   use_bufer_b: bool,
-) {
+) -> bool {
   let renderer = unsafe { &mut RENDERER_STATE };
+
   if let Some(renderer) = renderer {
-    renderer.send_frame(use_bufer_b);
+    renderer.send_frame(use_bufer_b)
+  } else {
+    true
   }
 }
 

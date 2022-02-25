@@ -10,6 +10,12 @@ crate_type = ["dylib"]
 [dependencies]
 jni = "0.19.0"
 
-[dependencies.ffmpeg-next]
-version = "4.4.0"
-features = ["build-lib-x264", "build-license-gpl"]
+
+ffmpeg-sys-next = "=4.4.0"
+ffmpeg-next = "=4.4.0"
+
+# TODO - below is for mac? maybe?
+# [dependencies.ffmpeg-next]
+# version = "=4.4.0"
+# features = ["static"]
+# features = ["static", "build-lib-x264", "build-license-gpl"]
