@@ -12,11 +12,10 @@ use ffmpeg_next::{
 };
 use jni::{objects::JString, JNIEnv};
 
-// const PIXEL_FORMAT: Pixel = Pixel::YUV420P;
 const OPTS: [(&str, &str); 3] = [
   ("preset", "ultrafast"),
-  ("profile", "main"),
-  ("crf", "24"), // TODO - make this configurable (oh who cares dude honestly)
+  ("profile", "high444"),
+  ("crf", "16"), // TODO - make this configurable (oh who cares dude honestly)
 ];
 
 struct JavaFrame {
@@ -33,14 +32,9 @@ impl JavaFrame {
     jvm_y_channel: *mut u8,
     jvm_u_channel: *mut u8,
     jvm_v_channel: *mut u8,
-    use_yuv444: bool,
   ) -> JavaFrame {
     let mut av_frame = frame::Video::new(
-      if use_yuv444 {
-        Pixel::YUV444P
-      } else {
-        Pixel::YUV420P
-      },
+      Pixel::YUV444P,
       width,
       height,
     );
@@ -87,21 +81,15 @@ impl Renderer {
     frame_rate: Rational,
     frame_a: JavaFrame,
     frame_b: JavaFrame,
-    use_yuv444: bool,
+    is_proxy: bool,
   ) -> Result<Renderer> {
     let mut octx = output(&output_file)?;
     let global_header = octx.format().flags().contains(Flags::GLOBAL_HEADER);
     let mut ost = octx.add_stream(encoder::find_by_name("libx264"))?;
     let mut encoder = ost.codec().encoder().video()?;
-    // encoder.set_bit_rate(20000000);
-    // TODO - set crf value here ahhahheahh
     encoder.set_width(width);
     encoder.set_height(height);
-    encoder.set_format(if use_yuv444 {
-      Pixel::YUV444P
-    } else {
-      Pixel::YUV420P
-    });
+    encoder.set_format(Pixel::YUV444P);
     encoder.set_color_range(Range::JPEG);
     encoder.set_frame_rate(Some(frame_rate));
     encoder.set_time_base(frame_rate.invert());
@@ -109,11 +97,11 @@ impl Renderer {
       encoder.set_flags(codec::Flags::GLOBAL_HEADER);
     }
 
-    encoder.open_with(Dictionary::from_iter(if use_yuv444 {
+    encoder.open_with(Dictionary::from_iter(if is_proxy {
       [
         ("preset", "ultrafast"),
         ("profile", "high444"),
-        ("crf", "24"),
+        ("crf", "28"),
       ]
     } else {
       OPTS
@@ -122,16 +110,12 @@ impl Renderer {
     encoder = ost.codec().encoder().video()?;
     ost.set_parameters(encoder);
 
-    // unsafe {
-    // TODO - ???
-    // (*ost.parameters().as_mut_ptr()).codec_tag = 0;
-    // }
-
     let encoder = ost.codec().encoder().video()?;
 
     output::dump(&octx, 0, Some(&output_file));
     octx.write_header()?;
-    let stream_time_base = octx.stream(0).map_or(Rational(90000, 1), |s| s.time_base());
+    let stream_time_base =
+      octx.stream(0).map_or(Rational(90000, 1), |s| s.time_base());
 
     Ok(Renderer {
       frame_a,
@@ -145,8 +129,8 @@ impl Renderer {
   }
 
   fn send_frame(&mut self, use_buffer_b: bool) -> bool {
-    let pts =
-      (self.frame_index as i64).rescale(self.frame_rate.invert(), self.stream_time_base);
+    let pts = (self.frame_index as i64)
+      .rescale(self.frame_rate.invert(), self.stream_time_base);
 
     let frame = if use_buffer_b {
       &mut self.frame_b
@@ -155,7 +139,7 @@ impl Renderer {
     };
 
     // println!("oh I see buffer b? {}", use_buffer_b);
-    frame.av_frame.set_pts(Some(pts as i64));
+    frame.av_frame.set_pts(Some(pts));
 
     // println!("About to send_frame {}", self.frame_index);
     if self.encoder.send_frame(&frame.av_frame).is_err() {
@@ -209,10 +193,10 @@ extern "C" fn Java_me_aris_recordingmod_RendererKt_startEncode(
   y_b: *mut u8,
   u_b: *mut u8,
   v_b: *mut u8,
-  use_yuv444: bool,
+  is_proxy: bool,
 ) -> bool {
-  let frame_a = JavaFrame::new(width, height, y_a, u_a, v_a, use_yuv444);
-  let frame_b = JavaFrame::new(width, height, y_b, u_b, v_b, use_yuv444);
+  let frame_a = JavaFrame::new(width, height, y_a, u_a, v_a);
+  let frame_b = JavaFrame::new(width, height, y_b, u_b, v_b);
   unsafe {
     RENDERER_STATE = Renderer::new(
       env.get_string(file).unwrap().into(),
@@ -221,7 +205,7 @@ extern "C" fn Java_me_aris_recordingmod_RendererKt_startEncode(
       Rational(fps, 1),
       frame_a,
       frame_b,
-      use_yuv444,
+      is_proxy,
     )
     .ok();
     RENDERER_STATE.is_some()

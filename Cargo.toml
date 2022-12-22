@@ -8,11 +8,17 @@ name = "recording_mod_native"
 crate_type = ["dylib"]
 
 [dependencies]
-jni = "0.19.0"
+jni = "0.20.0"
 
 
-ffmpeg-sys-next = "=4.4.0"
-ffmpeg-next = "=4.4.0"
+# ffmpeg-sys-next = "=4.4.0"
+
+
+# Windows
+[dependencies.ffmpeg-next]
+version = "=4.4.0"
+features = ["static"]
+# features = ["static", "build-lib-x264", "build-license-gpl"]
 
 # TODO - below is for mac? maybe?
 # [dependencies.ffmpeg-next]

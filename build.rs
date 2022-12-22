@@ -1,7 +1,8 @@
 use std::{env, path::Path};
 
 fn main() {
-  println!(r"cargo:rustc-link-search=C:\ffmpeg\lib");
+  // YOU HAVE TO SET THE FFMPEG_DIR variable
+  // println!(r"cargo:rustc-link-search=C:\ffmpeg;");
   // yikes!
 
   // let dir = env::var("CARGO_MANIFEST_DIR").unwrap();
